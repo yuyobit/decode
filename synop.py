@@ -2,6 +2,7 @@
 
 from __future__ import print_function
 import argparse
+import datetime
 import re
 import sys
 import yaml
@@ -30,7 +31,18 @@ def main():
                         help='YAML file specifying country and station filters',
                         required=False,
                         default=None)
+    parser.add_argument('-d', '--date', dest='basedate',
+                        metavar='base-date',
+                        help='(yyyy-mm-dd) SYNOP does only encode day of month, so it is necessary to know which values belong to which month (and which year). Defaults to today.',
+                        required=False,
+                        default=datetime.date.today())
     args = parser.parse_args()
+
+    if isinstance(args.basedate, str):
+        try:
+            args.basedate = datetime.datetime.strptime(args.basedate, '%Y-%m-%d')
+        except ValueError:
+            sys.exit('The specified base date seems to be invalid. Exiting.')
 
     if args.filterfile:
         filterSpec = None
@@ -50,7 +62,7 @@ def main():
             countryList = '[A-Z]{2}'
 
         if 'stations' in filterSpec and 'synop' in filterSpec['stations']:
-            stationList = filterSpec['synop']['stations']
+            stationList = filterSpec['stations']['synop']
     else:
         countryList = '[A-Z]{2}'
 
@@ -81,24 +93,35 @@ def main():
 
 def processBulletin(bulletin, count):
     mixedBulletin = False
+    modifierType = None
+    modifierSequence = None
+    windIndicator = None
+    timestamp = None
 
     # examine bulletin header
     # it is of the form TTAAii CCCC YYGGgg (BBB)
     # TT = data type, AA = country or region, ii = sequence nr
     # CCCC = issuer, YYGGgg = day of month, hour UTC and minute UTC
+
     # BBB is either RRx, CCx or AAx, where x = A..Z and RR = additional info (new data), CC = correction, AA = amendment
+    # additional info = new data normally contained in the initial bulletin but transmitted later
+    # amendment = additional data to reports already contained in the initial bulletin
+    # correction = correction of reports already contained in the initial bulletin
+
     # for SYNOP we are interested only in SI..., SM.... and SN....
     # see https://www.wmo.int/pages/prog/www/ois/Operational_Information/Publications/WMO_386/AHLsymbols/TableB1.html
     # countries are two letter character codes (non-ISO), can be filtered
     bulletinHead = re.match('^S[IMN](' + countryList + ')[0-9]{2}\s([A-Z]{4})', bulletin)
     if bulletinHead:
-        verbosePrint('bulletin ' + str(count) + ', country: ' + bulletinHead.group(1) + ', issuer: ' + bulletinHead.group(2))
+        print('bulletin ' + str(count) + ', country: ' + bulletinHead.group(1) + ', issuer: ' + bulletinHead.group(2))
         # consume first part of bulletin incl. CCCC and YYGGgg
         bulletin = bulletin[19:]
         # consume optional BBB modifier
         bulletinMod = re.match('^(AA|CC|RR)([A-Z])\s', bulletin)
         if bulletinMod:
-            print('modifier: ' + bulletinMod.group(1) + ', sequence: ' + bulletinMod.group(2))
+            modifierType = bulletinMod.group(1)
+            modifierSequence = bulletinMod.group(2)
+            print('modifier: ' + modifierType + ', sequence: ' + modifierSequence)
             bulletin = bulletin[4:]
 
         # decide whether MMMM group (e.g. AAXX) occurs only once or more often
@@ -110,7 +133,15 @@ def processBulletin(bulletin, count):
             # consume MMMM and YYGGi group which is valid for the entire bulletin
             bulletin = bulletin[4:]
             windIndicator = int(bulletin[5:6])
-            print('day: ' + bulletin[1:3] + ', hour: ' + bulletin[3:5])
+            day = bulletin[1:3]
+            hour = bulletin[3:5]
+
+            year = args.basedate.year
+            month = args.basedate.month
+            if day > args.basedate.day:
+                month -= 1
+            timestamp = datetime.datetime(year, month, int(day), int(hour))
+            print('timestamp: ' + str(timestamp))
             bulletin = bulletin[7:]
         else:
             mixedBulletin = True
@@ -134,7 +165,15 @@ def processBulletin(bulletin, count):
                     # consume MMMM and YYGGi group of station
                     station = station[4:]
                     windIndicator =  int(station[5:6])
-                    print('day: ' + station[1:3] + ', hour: ' + station[3:5])
+                    day = station[1:3]
+                    hour = station[3:5]
+
+                    year = args.basedate.year
+                    month = args.basedate.month
+                    if day > args.basedate.day:
+                        month -= 1
+                    timestamp = datetime.datetime(year, month, int(day), int(hour))
+                    print('day: ' + str(timestamp))
                     station = station[7:]
             # consume IIiii (station number)
             stationId = station[:5]
