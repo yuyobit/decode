@@ -13,6 +13,8 @@ import yaml
 stationList = []
 countryList = None
 stationInventory = {}
+decodedData = []
+
 # use NOAA bulletin separator line to split up bulletins
 bulletinSeparator = '####[0-9]{9}####'
 
@@ -23,8 +25,6 @@ def main():
     global countryList
     global stationList
     global stationInventory
-
-    decodedData = []
 
     parser = argparse.ArgumentParser(description='Parses NOAA TAC SYNOP bulletins.')
     parser.add_argument('stationInventory',
@@ -113,15 +113,16 @@ def main():
         if len(bulletin) == 0:
             continue
         count += 1
-        decodedData = decodedData + processBulletin(bulletin, count)
+        processBulletin(bulletin, count)
 
     try:
+        print()
         print('Writing to output file ' + args.output + '...')
         outputFile = open(args.output, 'w')
-        writer = csv.DictWriter(outputFile, fieldnames=['station_id', 'timestamp', 'modifier_type', 'modifier_sequence',
-            'temperature', 'dew_point_temperature', 'rel_humidity', 'wind_direction', 'wind_speed', 'gust_speed',
-            'station_pressure', 'reduced_pressure', 'cloud_cover', 'sun_duration', 'precipitation_amount',
-            'precipitation_duration', 'current_weather', 'snow_depth'],
+        writer = csv.DictWriter(outputFile, fieldnames=['bulletin_id', 'bulletin_issuer', 'station_id',
+            'timestamp', 'modifier_type', 'modifier_sequence', 'temperature', 'dew_point_temperature',
+            'rel_humidity', 'wind_direction', 'wind_speed', 'gust_speed', 'station_pressure', 'reduced_pressure',
+            'cloud_cover', 'sun_duration', 'precipitation_amount', 'precipitation_duration', 'current_weather', 'snow_depth'],
             quoting=csv.QUOTE_ALL, delimiter=',')
 
         writer.writeheader()
@@ -154,6 +155,8 @@ def processBulletin(bulletin, count):
     timestamp = None
 
     decodedData = []
+    bulletinId = None
+    bulletinIssuer = None
     modifierType = None
     modifierSequence = None
 
@@ -170,10 +173,12 @@ def processBulletin(bulletin, count):
     # for SYNOP we are interested only in SI..., SM.... and SN....
     # see https://www.wmo.int/pages/prog/www/ois/Operational_Information/Publications/WMO_386/AHLsymbols/TableB1.html
     # countries are two letter character codes (non-ISO), can be filtered
-    bulletinHead = re.match('^S[IMN](' + countryList + ')[0-9]{2}\s([A-Z]{4})', bulletin)
+    bulletinHead = re.match('(^S[IMN](' + countryList + ')[0-9]{2})\s([A-Z]{4})', bulletin)
     if bulletinHead:
         print()
-        print('bulletin ' + str(count) + ', country: ' + bulletinHead.group(1) + ', issuer: ' + bulletinHead.group(2))
+        bulletinId = bulletinHead.group(1)
+        bulletinIssuer = bulletinHead.group(3)
+        print('bulletin ' + str(count) + ', country: ' + bulletinHead.group(2) + ', issuer: ' + bulletinIssuer)
         # consume first part of bulletin incl. CCCC and YYGGgg
         bulletin = bulletin[19:]
         # consume optional BBB modifier
@@ -242,21 +247,33 @@ def processBulletin(bulletin, count):
             stationId = station[:5]
             if not stationList or int(stationId) in stationList:
                 station = station[6:]
-                print('decoding report from station ' + stationId + '.')
-                decodedData.append(processStation(stationId, timestamp, windIndicator, modifierType, modifierSequence, station))
+                processStation(stationId, timestamp, windIndicator, bulletinId, bulletinIssuer, modifierType, modifierSequence, station)
             else:
                 verbosePrint('discarding report from station ' + stationId + ', not in list.')
     else:
         verbosePrint('discarding non-SYNOP or geographically irrelevant bulletin.')
 
-    return decodedData
+def processStation(stationId, timestamp, windIndicator, bulletinId, bulletinIssuer, modifierType, modifierSequence, synop):
+    global decodedData
 
-def processStation(stationId, timestamp, windIndicator, modifierType, modifierSequence, synop):
+    # skip station if duplicate
+    duplicates = filter(lambda data: data['station_id'] == stationId and data['timestamp'] == timestamp, decodedData)
+    for duplicate in duplicates:
+        if duplicate['modifier'] == None and modifierType == None and modifierSequence == None:
+            verbosePrint('Skipping duplicate report from station ' + stationId + '.')
+            return
+        elif duplicate['modifier']['type'] == modifierType and duplicate['modifier']['sequence'] == modifierSequence:
+            verbosePrint('Skipping duplicate report from station ' + stationId + '.')
+            return
+
+    print('decoding report from station ' + stationId + '.')
     verbosePrint(synop)
 
     data = {}
     data['station_id'] = stationId
     data['timestamp'] = timestamp
+    data['bulletin_id'] = bulletinId
+    data['bulletin_issuer'] = bulletinIssuer
     data['modifier'] = None
 
     if modifierType != None and modifierSequence != None:
@@ -470,7 +487,7 @@ def processStation(stationId, timestamp, windIndicator, modifierType, modifierSe
         data['sun_duration'] = None
         data['gust_speed'] = None
 
-    return data
+    decodedData.append(data)
 
 def decodePrecipitation(precipGroup):
     precipitation = {}
