@@ -24,6 +24,8 @@ def main():
     global stationList
     global stationInventory
 
+    decodedData = []
+
     parser = argparse.ArgumentParser(description='Parses NOAA TAC SYNOP bulletins.')
     parser.add_argument('stationInventory',
                         metavar='station-inventory',
@@ -31,6 +33,9 @@ def main():
     parser.add_argument('input',
                         metavar='input-file',
                         help='the input file with SYNOP bulletins')
+    parser.add_argument('output',
+                        metavar='output-file',
+                        help='the output file where to write decoded data')
     parser.add_argument('-v', '--verbose', dest='verbose',
                         help='print verbose output of filtering etc.',
                         action='store_true')
@@ -81,7 +86,7 @@ def main():
         reader = csv.DictReader(StringIO.StringIO(stations.encode('utf-8')),
             quoting=csv.QUOTE_ALL, delimiter=',')
         for row in reader:
-            stationInventory[row['wmo']] = { 'ele': row['ele'], 'lat': row['lat'] }
+            stationInventory[row['wmo']] = row
     except IOError:
         sys.exit('Could not read station inventory file, please check if it exists. Exiting.')
 
@@ -108,7 +113,38 @@ def main():
         if len(bulletin) == 0:
             continue
         count += 1
-        processBulletin(bulletin, count)
+        decodedData = decodedData + processBulletin(bulletin, count)
+
+    try:
+        print('Writing to output file ' + args.output + '...')
+        outputFile = open(args.output, 'w')
+        writer = csv.DictWriter(outputFile, fieldnames=['station_id', 'timestamp', 'modifier_type', 'modifier_sequence',
+            'temperature', 'dew_point_temperature', 'rel_humidity', 'wind_direction', 'wind_speed', 'gust_speed',
+            'station_pressure', 'reduced_pressure', 'cloud_cover', 'sun_duration', 'precipitation_amount',
+            'precipitation_duration', 'current_weather', 'snow_depth'],
+            quoting=csv.QUOTE_ALL, delimiter=',')
+
+        writer.writeheader()
+        for dataRow in decodedData:
+            if dataRow['modifier'] != None:
+                dataRow['modifier_type'] = dataRow['modifier']['type']
+                dataRow['modifier_sequence'] = dataRow['modifier']['sequence']
+            else:
+                dataRow['modifier_type'] = None
+                dataRow['modifier_sequence'] = None
+            del dataRow['modifier']
+
+            if dataRow['precipitation'] != None:
+                dataRow['precipitation_amount'] = dataRow['precipitation']['amount']
+                dataRow['precipitation_duration'] = dataRow['precipitation']['duration']
+            else:
+                dataRow['precipitation_amount'] = None
+                dataRow['precipitation_duration'] = None
+            del dataRow['precipitation']
+
+            writer.writerow(dataRow)
+    except IOError:
+        sys.exit('Could not open output file. Exiting.')
 
 def processBulletin(bulletin, count):
     mixedBulletin = False
@@ -116,6 +152,10 @@ def processBulletin(bulletin, count):
     modifierSequence = None
     windIndicator = None
     timestamp = None
+
+    decodedData = []
+    modifierType = None
+    modifierSequence = None
 
     # examine bulletin header
     # it is of the form TTAAii CCCC YYGGgg (BBB)
@@ -203,16 +243,25 @@ def processBulletin(bulletin, count):
             if not stationList or int(stationId) in stationList:
                 station = station[6:]
                 print('decoding report from station ' + stationId + '.')
-                processStation(stationId, timestamp, windIndicator, station)
+                decodedData.append(processStation(stationId, timestamp, windIndicator, modifierType, modifierSequence, station))
             else:
                 verbosePrint('discarding report from station ' + stationId + ', not in list.')
     else:
         verbosePrint('discarding non-SYNOP or geographically irrelevant bulletin.')
 
-def processStation(stationId, timestamp, windIndicator, synop):
+    return decodedData
+
+def processStation(stationId, timestamp, windIndicator, modifierType, modifierSequence, synop):
     verbosePrint(synop)
 
     data = {}
+    data['station_id'] = stationId
+    data['timestamp'] = timestamp
+    data['modifier'] = None
+
+    if modifierType != None and modifierSequence != None:
+        data['modifier'] = {'type': modifierType, 'sequence': modifierSequence}
+
     # split SYNOP into its parts
     split = synop.split(' 333 ')
     land = split[0]
@@ -304,7 +353,11 @@ def processStation(stationId, timestamp, windIndicator, synop):
     except ValueError:
         data['station_pressure'] = None
 
-    data['reduced_pressure'] = computeQFF(data['station_pressure'], data['temperature'], stationInventory[stationId]['ele'], stationInventory[stationId]['lat'])
+    if stationId in stationInventory:
+        data['reduced_pressure'] = computeQFF(data['station_pressure'], data['temperature'], stationInventory[stationId]['ele'], stationInventory[stationId]['lat'])
+    else:
+        data['reduced_pressure'] = None
+    land = land[6:]
 
     # 4PPPP group omitted because reduced pressure (QFF) is computed
     # why? different reduction methods are in use, but consistency is important
@@ -314,7 +367,148 @@ def processStation(stationId, timestamp, windIndicator, synop):
     if land[0:1] == '5':
         land = land[6:]
 
-    print(data)
+    # 6RRRt - precipitation amount and time frame
+    # not published - no precipitation
+    if precipitationIndicator == '3':
+        data['precipitation'] = [{'amount': 0, 'time': None}]
+    # not published - no measurement
+    elif precipitationIndicator == '4':
+        data['precipitation'] = None
+    if land[0:1] == '6':
+        data['precipitation'] = decodePrecipitation(land[0:5])
+        land = land[6:]
+
+    if land[0:1] == '7':
+        try:
+            data['current_weather'] = int(land[1:3])
+        except ValueError:
+            data['current_weather'] = None
+        land = land[6:]
+    else:
+        data['current_weather'] = None
+
+    # 8NCCC - cloud type information - omitted
+    # 9GGgg - time of observation - omitted
+
+    ### climatological part
+    if len(clim) > 0:
+
+        # discard everything before 4...
+        while len(clim) > 0 and int(clim[0:1]) < 4:
+            clim = clim[6:]
+
+        # 4Esss - snow depth
+        if clim[0:1] == '4':
+            try:
+                data['snow_depth'] = int(clim[2:5])
+                if data['snow_depth'] == 997:
+                    data['snow_depth'] = 0.5
+                elif data['snow_depth'] == 998:
+                    data['snow_depth'] = 0.01
+                elif data['snow_depth'] == 999:
+                    data['snow_depth'] = None
+            except ValueError:
+                data['snow_depth'] = None
+            clim = clim[6:]
+        else:
+            data['snow_depth'] = None
+
+        # 55SSS - daily hours of sunshine (of the previous day) in 10ths of hours - omitted
+        # 553SS - duration of sunshine in the last hour in 10ths of hours
+        while len(clim) > 0 and int(clim[0:1]) < 6 and clim[0:3] != '553':
+            clim = clim[6:]
+
+        if clim[0:3] == '553':
+            try:
+                data['sun_duration'] = int(clim[3:5]) / 10
+            except ValueError:
+                data['sun_duration'] = None
+            clim = clim[6:]
+        else:
+            data['sun_duration'] = None
+
+        while len(clim) > 0 and int(clim[0:1]) < 6:
+            clim = clim[6:]
+        # 6RRRt - amount and duration of precipitation (like in Section 1)
+        if clim[0:1] == '6':
+            precipitation = decodePrecipitation(clim[0:5])
+            if 'precipitation' not in data.keys() or data['precipitation'] == None:
+                data['precipitation'] = precipitation
+            elif precipitation != None:
+                data['precipitation'].append(precipitation)
+        elif 'precipitation' not in data.keys():
+            data['precipitation'] = None
+        # 7RRRR - total amount of precipitation in the last 24 hours - omitted
+        while int(clim[0:1]) < 9:
+            clim = clim[6:]
+
+        # 910ff - highest gust in the last 10 min
+        while len(clim) > 0 and int(clim[0:1]) == 9 and not clim[0:3] == '910':
+            clim = clim[6:]
+        if clim[0:3] == '910':
+            try:
+                data['gust_speed'] = int(clim[3:5])
+            except ValueError:
+                data['gust_speed'] = None
+            # gust speed may be > 99, look for 00fff
+            if data['gust_speed'] == 99 and clim[6:8] == '00':
+                data['gust_speed'] = int(clim[8:11])
+                clim = clim[12:]
+            else:
+                clim = clim[6:]
+            # speed is specified in knots, have to convert to m/s
+            if (windIndicator == 3 or windIndicator == 4) and data['gust_speed'] != None:
+                data['gust_speed'] = round(data['gust_speed'] * 0.514444, 2)
+            # if no wind indicator omit wind data to avoid inconsistencies
+            if windIndicator == -1:
+                data['gust_speed'] = None
+        else:
+            data['gust_speed'] = None
+        # 911ff - highest gust during the period covered by past weather - omitted
+    else:
+        data['snow_depth'] = None
+        data['sun_duration'] = None
+        data['gust_speed'] = None
+
+    return data
+
+def decodePrecipitation(precipGroup):
+    precipitation = {}
+
+    try:
+        amount = float(precipGroup[1:4])
+        if amount == 990:
+            amount = 0.05
+        elif amount > 990:
+            amount = (amount - 990) / 10
+
+        duration = int(precipGroup[4:5])
+        if duration == 0:
+            raise ValueError
+        elif duration == 1:
+            duration = 6
+        elif duration == 2:
+            duration = 12
+        elif duration == 3:
+            duration = 18
+        elif duration == 4:
+            duration = 24
+        elif duration == 5:
+            duration = 1
+        elif duration == 6:
+            duration = 2
+        elif duration == 7:
+            duration = 3
+        elif duration == 8:
+            duration = 9
+        elif duration == 9:
+            duration = 15
+
+        precipitation = {'amount': amount, 'duration': duration}
+    except ValueError:
+        precipitation = None
+
+    return precipitation
 
 # see https://www.wmo.int/pages/prog/www/IMOP/meetings/SI/ET-Stand-1/Doc-10_Pressure-red.pdf
 # for a discussion of different reduction formulae
