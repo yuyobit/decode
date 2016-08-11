@@ -136,8 +136,12 @@ def main():
             del dataRow['modifier']
 
             if dataRow['precipitation'] != None:
-                dataRow['precipitation_amount'] = dataRow['precipitation']['amount']
-                dataRow['precipitation_duration'] = dataRow['precipitation']['duration']
+                # not possible to write more than one precipitation entry to CSV
+                for precip in dataRow['precipitation']:
+                    if precip != None:
+                        dataRow['precipitation_amount'] = precip['amount']
+                        dataRow['precipitation_duration'] = precip['duration']
+                    break
             else:
                 dataRow['precipitation_amount'] = None
                 dataRow['precipitation_duration'] = None
@@ -262,7 +266,7 @@ def processStation(stationId, timestamp, windIndicator, bulletinId, bulletinIssu
         if duplicate['modifier'] == None and modifierType == None and modifierSequence == None:
             verbosePrint('Skipping duplicate report from station ' + stationId + '.')
             return
-        elif duplicate['modifier']['type'] == modifierType and duplicate['modifier']['sequence'] == modifierSequence:
+        elif duplicate['modifier'] != None and duplicate['modifier']['type'] == modifierType and duplicate['modifier']['sequence'] == modifierSequence:
             verbosePrint('Skipping duplicate report from station ' + stationId + '.')
             return
 
@@ -349,9 +353,9 @@ def processStation(stationId, timestamp, windIndicator, bulletinId, bulletinIssu
                 data['rel_humidity'] = value
             else:
                 data['dew_point_temperature'] = value / 10
-            if sign == 1:
-                data['dew_point_temperature'] = 0 - data['dew_point_temperature']
-            data['rel_humidity'] = round(relHumidity(data['temperature'], data['dew_point_temperature']), 1)
+                if sign == 1:
+                    data['dew_point_temperature'] = 0 - data['dew_point_temperature']
+                data['rel_humidity'] = round(relHumidity(data['temperature'], data['dew_point_temperature']), 1)
         except ValueError:
             data['dew_point_temperature'] = None
             data['rel_humidity'] = None
@@ -387,12 +391,12 @@ def processStation(stationId, timestamp, windIndicator, bulletinId, bulletinIssu
     # 6RRRt - precipitation amount and time frame
     # not published - no precipitation
     if precipitationIndicator == '3':
-        data['precipitation'] = [{'amount': 0, 'time': None}]
+        data['precipitation'] = [{'amount': 0, 'duration': None}]
     # not published - no measurement
     elif precipitationIndicator == '4':
         data['precipitation'] = None
     if land[0:1] == '6':
-        data['precipitation'] = decodePrecipitation(land[0:5])
+        data['precipitation'] = [decodePrecipitation(land[0:5])]
         land = land[6:]
 
     if land[0:1] == '7':
@@ -437,7 +441,7 @@ def processStation(stationId, timestamp, windIndicator, bulletinId, bulletinIssu
 
         if clim[0:3] == '553':
             try:
-                data['sun_duration'] = int(clim[3:5]) / 10
+                data['sun_duration'] = float(clim[3:5]) / 10
             except ValueError:
                 data['sun_duration'] = None
             clim = clim[6:]
@@ -450,13 +454,13 @@ def processStation(stationId, timestamp, windIndicator, bulletinId, bulletinIssu
         if clim[0:1] == '6':
             precipitation = decodePrecipitation(clim[0:5])
             if 'precipitation' not in data.keys() or data['precipitation'] == None:
-                data['precipitation'] = precipitation
+                data['precipitation'] = [precipitation]
             elif precipitation != None:
                 data['precipitation'].append(precipitation)
         elif 'precipitation' not in data.keys():
             data['precipitation'] = None
         # 7RRRR - total amount of precipitation in the last 24 hours - omitted
-        while int(clim[0:1]) < 9:
+        while len(clim) > 0 and int(clim[0:1]) < 9:
             clim = clim[6:]
 
         # 910ff - highest gust in the last 10 min
