@@ -84,9 +84,9 @@ def processStation(stationId, timestamp, windIndicator, bulletinId, bulletinIssu
                 data['temperature'] = None
         except ValueError:
             data['temperature'] = None
+        land = land[6:]
     else:
         data['temperature'] = None
-    land = land[6:]
 
     # 2sTTT (or 29UUU) - dew point temperature or relative humidity
     if land[0:1] == '2':
@@ -104,31 +104,39 @@ def processStation(stationId, timestamp, windIndicator, bulletinId, bulletinIssu
         except ValueError:
             data['dew_point_temperature'] = None
             data['rel_humidity'] = None
-    land = land[6:]
+        land = land[6:]
+    else:
+        data['dew_point_temperature'] = None
+        data['rel_humidity'] = None
 
     # 3PPPP - pressure at station level
-    try:
-        if land[4:5] == '/':
-            data['station_pressure'] = int(land[1:4])
+    if land[0:1] == '3':
+        try:
+            if land[4:5] == '/':
+                data['station_pressure'] = int(land[1:4])
+            else:
+                data['station_pressure'] = float(land[1:5]) / 10
+
+            # is there a better cutoff level?
+            if data['station_pressure'] < 200:
+                data['station_pressure'] += 1000
+        except ValueError:
+            data['station_pressure'] = None
+
+        if stationId in settings.stationInventory:
+            data['reduced_pressure'] = computeQFF(data['station_pressure'], data['temperature'],
+                settings.stationInventory[stationId]['ele'], settings.stationInventory[stationId]['lat'])
         else:
-            data['station_pressure'] = float(land[1:5]) / 10
-
-        # is there a better cutoff level?
-        if data['station_pressure'] < 200:
-            data['station_pressure'] += 1000
-    except ValueError:
-        data['station_pressure'] = None
-
-    if stationId in settings.stationInventory:
-        data['reduced_pressure'] = computeQFF(data['station_pressure'], data['temperature'],
-            settings.stationInventory[stationId]['ele'], settings.stationInventory[stationId]['lat'])
+            data['reduced_pressure'] = None
+        land = land[6:]
     else:
+        data['station_pressure'] = None
         data['reduced_pressure'] = None
-    land = land[6:]
 
     # 4PPPP group omitted because reduced pressure (QFF) is computed
     # why? different reduction methods are in use, but consistency is important
-    land = land[6:]
+    if land[0:1] == '4':
+        land = land[6:]
 
     # 5appp - pressure tendency and amount of change omitted
     if land[0:1] == '5':
@@ -144,6 +152,8 @@ def processStation(stationId, timestamp, windIndicator, bulletinId, bulletinIssu
     if land[0:1] == '6':
         data['precipitation'] = [decodePrecipitation(land[0:5])]
         land = land[6:]
+    else:
+        data['precipitation'] = None
 
     if land[0:1] == '7':
         try:

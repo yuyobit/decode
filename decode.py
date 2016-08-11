@@ -5,6 +5,7 @@ import argparse
 from bulletin import processBulletin
 import csv
 import datetime
+import glob
 import re
 import settings
 import StringIO
@@ -54,30 +55,34 @@ def main():
     setupFilter()
     setupStationInventory()
 
-    data = ''
-    try:
-        inputFile = open(settings.input, 'r')
-        data = inputFile.read()
-        inputFile.close()
-        # convert newlines into spaces and remove carriage returns
-        data = data.replace('\n', ' ')
-        data = data.replace('\r', '')
-        # collapse spaces
-        data = ' '.join(data.split())
-    except IOError:
-        sys.exit('Could not read input file, please check if it exists. Exiting.')
+    inputFiles = glob.glob(settings.input)
+    for inputFileName in inputFiles:
+        print()
+        print('Processing input file ' + inputFileName + '.')
+        data = ''
+        try:
+            inputFile = open(inputFileName, 'r')
+            data = inputFile.read()
+            inputFile.close()
+            # convert newlines into spaces and remove carriage returns
+            data = data.replace('\n', ' ')
+            data = data.replace('\r', '')
+            # collapse spaces
+            data = ' '.join(data.split())
+        except IOError:
+            sys.exit('Could not read input file ' + inputFileName + ', please check if it exists. Exiting.')
 
-    # specify regular expression of what separates bulletins in the text file
-    bulletins = re.split(bulletinSeparator, data)
+        # specify regular expression of what separates bulletins in the text file
+        bulletins = re.split(bulletinSeparator, data)
 
-    count = 0
-    for bulletin in bulletins:
-        bulletin = bulletin.strip()
-        # first one will be usually empty
-        if len(bulletin) == 0:
-            continue
-        count += 1
-        processBulletin(bulletin, count, settings.basedate)
+        count = 0
+        for bulletin in bulletins:
+            bulletin = bulletin.strip()
+            # first one will be usually empty
+            if len(bulletin) == 0:
+                continue
+            count += 1
+            processBulletin(bulletin, count, settings.basedate)
 
     writeOutput()
 
