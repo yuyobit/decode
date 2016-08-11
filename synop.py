@@ -1,267 +1,12 @@
-#!/usr/bin/env python
-
 from __future__ import print_function
-import argparse
-import csv
-import datetime
-import math
-import re
-import sys
-import StringIO
-import yaml
-
-stationList = []
-countryList = None
-stationInventory = {}
-decodedData = []
-
-# use NOAA bulletin separator line to split up bulletins
-bulletinSeparator = '####[0-9]{9}####'
-
-args = None
-
-def main():
-    global args
-    global countryList
-    global stationList
-    global stationInventory
-
-    parser = argparse.ArgumentParser(description='Parses NOAA TAC SYNOP bulletins.')
-    parser.add_argument('stationInventory',
-                        metavar='station-inventory',
-                        help='CSV file containing station metadata')
-    parser.add_argument('input',
-                        metavar='input-file',
-                        help='the input file with SYNOP bulletins')
-    parser.add_argument('output',
-                        metavar='output-file',
-                        help='the output file where to write decoded data')
-    parser.add_argument('-v', '--verbose', dest='verbose',
-                        help='print verbose output of filtering etc.',
-                        action='store_true')
-    parser.add_argument('-f', '--filter', dest='filterfile',
-                        metavar='filter-file',
-                        help='YAML file specifying country and station filters',
-                        required=False,
-                        default=None)
-    parser.add_argument('-d', '--date', dest='basedate',
-                        metavar='base-date',
-                        help='(yyyy-mm-dd) SYNOP does only encode day of month, so it is necessary to know which values belong to which month (and which year). Defaults to today.',
-                        required=False,
-                        default=datetime.date.today())
-    args = parser.parse_args()
-
-    if isinstance(args.basedate, str):
-        try:
-            args.basedate = datetime.datetime.strptime(args.basedate, '%Y-%m-%d')
-        except ValueError:
-            sys.exit('The specified base date seems to be invalid. Exiting.')
-
-    if args.filterfile:
-        filterSpec = None
-        try:
-            filterFile = open(args.filterfile, 'r')
-            filterSpec = yaml.safe_load(filterFile.read())
-            filterFile.close()
-        except IOError:
-            sys.exit('Could not read filter file, please check if it exists. Exiting.')
-
-        if 'countries' in filterSpec:
-            countryList = ''
-            for country in filterSpec['countries']:
-                countryList += country + '|'
-            countryList = countryList[:len(countryList) - 1]
-        else:
-            countryList = '[A-Z]{2}'
-
-        if 'stations' in filterSpec and 'synop' in filterSpec['stations']:
-            stationList = filterSpec['stations']['synop']
-    else:
-        countryList = '[A-Z]{2}'
-
-    try:
-        stationFile = open(args.stationInventory, 'r')
-        stations = unicode(stationFile.read(), 'utf-8')
-        stationFile.close()
-        reader = csv.DictReader(StringIO.StringIO(stations.encode('utf-8')),
-            quoting=csv.QUOTE_ALL, delimiter=',')
-        for row in reader:
-            stationInventory[row['wmo']] = row
-    except IOError:
-        sys.exit('Could not read station inventory file, please check if it exists. Exiting.')
-
-    data = ''
-    try:
-        inputFile = open(args.input, 'r')
-        data = inputFile.read()
-        inputFile.close()
-        # convert newlines into spaces and remove carriage returns
-        data = data.replace('\n', ' ')
-        data = data.replace('\r', '')
-        # collapse spaces
-        data = ' '.join(data.split())
-    except IOError:
-        sys.exit('Could not read input file, please check if it exists. Exiting.')
-
-    # specify regular expression of what separates bulletins in the text file
-    bulletins = re.split(bulletinSeparator, data)
-
-    count = 0
-    for bulletin in bulletins:
-        bulletin = bulletin.strip()
-        # first one will be usually empty
-        if len(bulletin) == 0:
-            continue
-        count += 1
-        processBulletin(bulletin, count)
-
-    try:
-        print()
-        print('Writing to output file ' + args.output + '...')
-        outputFile = open(args.output, 'w')
-        writer = csv.DictWriter(outputFile, fieldnames=['bulletin_id', 'bulletin_issuer', 'station_id',
-            'timestamp', 'modifier_type', 'modifier_sequence', 'temperature', 'dew_point_temperature',
-            'rel_humidity', 'wind_direction', 'wind_speed', 'gust_speed', 'station_pressure', 'reduced_pressure',
-            'cloud_cover', 'sun_duration', 'precipitation_amount', 'precipitation_duration', 'current_weather', 'snow_depth'],
-            quoting=csv.QUOTE_ALL, delimiter=',')
-
-        writer.writeheader()
-        for dataRow in decodedData:
-            if dataRow['modifier'] != None:
-                dataRow['modifier_type'] = dataRow['modifier']['type']
-                dataRow['modifier_sequence'] = dataRow['modifier']['sequence']
-            else:
-                dataRow['modifier_type'] = None
-                dataRow['modifier_sequence'] = None
-            del dataRow['modifier']
-
-            if dataRow['precipitation'] != None:
-                # not possible to write more than one precipitation entry to CSV
-                for precip in dataRow['precipitation']:
-                    if precip != None:
-                        dataRow['precipitation_amount'] = precip['amount']
-                        dataRow['precipitation_duration'] = precip['duration']
-                    break
-            else:
-                dataRow['precipitation_amount'] = None
-                dataRow['precipitation_duration'] = None
-            del dataRow['precipitation']
-
-            writer.writerow(dataRow)
-    except IOError:
-        sys.exit('Could not open output file. Exiting.')
-
-def processBulletin(bulletin, count):
-    mixedBulletin = False
-    modifierType = None
-    modifierSequence = None
-    windIndicator = None
-    timestamp = None
-
-    decodedData = []
-    bulletinId = None
-    bulletinIssuer = None
-    modifierType = None
-    modifierSequence = None
-
-    # examine bulletin header
-    # it is of the form TTAAii CCCC YYGGgg (BBB)
-    # TT = data type, AA = country or region, ii = sequence nr
-    # CCCC = issuer, YYGGgg = day of month, hour UTC and minute UTC
-
-    # BBB is either RRx, CCx or AAx, where x = A..Z and RR = additional info (new data), CC = correction, AA = amendment
-    # additional info = new data normally contained in the initial bulletin but transmitted later
-    # amendment = additional data to reports already contained in the initial bulletin
-    # correction = correction of reports already contained in the initial bulletin
-
-    # for SYNOP we are interested only in SI..., SM.... and SN....
-    # see https://www.wmo.int/pages/prog/www/ois/Operational_Information/Publications/WMO_386/AHLsymbols/TableB1.html
-    # countries are two letter character codes (non-ISO), can be filtered
-    bulletinHead = re.match('(^S[IMN](' + countryList + ')[0-9]{2})\s([A-Z]{4})', bulletin)
-    if bulletinHead:
-        print()
-        bulletinId = bulletinHead.group(1)
-        bulletinIssuer = bulletinHead.group(3)
-        print('bulletin ' + str(count) + ', country: ' + bulletinHead.group(2) + ', issuer: ' + bulletinIssuer)
-        # consume first part of bulletin incl. CCCC and YYGGgg
-        bulletin = bulletin[19:]
-        # consume optional BBB modifier
-        bulletinMod = re.match('^(AA|CC|RR)([A-Z])\s', bulletin)
-        if bulletinMod:
-            modifierType = bulletinMod.group(1)
-            modifierSequence = bulletinMod.group(2)
-            print('modifier: ' + modifierType + ', sequence: ' + modifierSequence)
-            bulletin = bulletin[4:]
-
-        # decide whether MMMM group (e.g. AAXX) occurs only once or more often
-        # since we are only interested in AAXX here, we can safely assume that if XX occurs only once it is only present at the start of the bulletin
-        if bulletin.count('XX') <= 1:
-            if not bulletin.startswith('AAXX'):
-                verbosePrint('discarding bulletin not containing data from fixed surface land stations.')
-                return
-            # consume MMMM and YYGGi group which is valid for the entire bulletin
-            bulletin = bulletin[4:]
-            try:
-                windIndicator = int(bulletin[5:6])
-            except ValueError:
-                windIndicator = -1
-            day = bulletin[1:3]
-            hour = bulletin[3:5]
-
-            year = args.basedate.year
-            month = args.basedate.month
-            if day > args.basedate.day:
-                month -= 1
-            timestamp = datetime.datetime(year, month, int(day), int(hour))
-            print('timestamp: ' + str(timestamp))
-            bulletin = bulletin[7:]
-        else:
-            mixedBulletin = True
-
-        # we have now reached the level of individual stations
-        stations = bulletin.split('=')
-        for station in stations:
-            station = station.strip()
-            # discard empty report
-            if len(station) == 0:
-                continue
-            if station.endswith('NIL'):
-                verbosePrint('discarding NIL report.')
-                continue
-
-            if mixedBulletin:
-                if not station.startswith('AAXX'):
-                    verbosePrint('discarding station report not containing data from fixed surface land stations.')
-                    continue
-                else:
-                    # consume MMMM and YYGGi group of station
-                    station = station[4:]
-                    windIndicator =  int(station[5:6])
-                    day = station[1:3]
-                    hour = station[3:5]
-
-                    year = args.basedate.year
-                    month = args.basedate.month
-                    if day > args.basedate.day:
-                        month -= 1
-                    timestamp = datetime.datetime(year, month, int(day), int(hour))
-                    print('day: ' + str(timestamp))
-                    station = station[7:]
-            # consume IIiii (station number)
-            stationId = station[:5]
-            if not stationList or int(stationId) in stationList:
-                station = station[6:]
-                processStation(stationId, timestamp, windIndicator, bulletinId, bulletinIssuer, modifierType, modifierSequence, station)
-            else:
-                verbosePrint('discarding report from station ' + stationId + ', not in list.')
-    else:
-        verbosePrint('discarding non-SYNOP or geographically irrelevant bulletin.')
+from lib import computeQFF
+from lib import relHumidity
+from lib import verbosePrint
+import settings
 
 def processStation(stationId, timestamp, windIndicator, bulletinId, bulletinIssuer, modifierType, modifierSequence, synop):
-    global decodedData
-
     # skip station if duplicate
-    duplicates = filter(lambda data: data['station_id'] == stationId and data['timestamp'] == timestamp, decodedData)
+    duplicates = filter(lambda data: data['station_id'] == stationId and data['timestamp'] == timestamp, settings.decodedData)
     for duplicate in duplicates:
         if duplicate['modifier'] == None and modifierType == None and modifierSequence == None:
             verbosePrint('Skipping duplicate report from station ' + stationId + '.')
@@ -374,8 +119,9 @@ def processStation(stationId, timestamp, windIndicator, bulletinId, bulletinIssu
     except ValueError:
         data['station_pressure'] = None
 
-    if stationId in stationInventory:
-        data['reduced_pressure'] = computeQFF(data['station_pressure'], data['temperature'], stationInventory[stationId]['ele'], stationInventory[stationId]['lat'])
+    if stationId in settings.stationInventory:
+        data['reduced_pressure'] = computeQFF(data['station_pressure'], data['temperature'],
+            settings.stationInventory[stationId]['ele'], settings.stationInventory[stationId]['lat'])
     else:
         data['reduced_pressure'] = None
     land = land[6:]
@@ -491,7 +237,7 @@ def processStation(stationId, timestamp, windIndicator, bulletinId, bulletinIssu
         data['sun_duration'] = None
         data['gust_speed'] = None
 
-    decodedData.append(data)
+    settings.decodedData.append(data)
 
 def decodePrecipitation(precipGroup):
     precipitation = {}
@@ -530,40 +276,3 @@ def decodePrecipitation(precipGroup):
         precipitation = None
 
     return precipitation
-
-# see https://www.wmo.int/pages/prog/www/IMOP/meetings/SI/ET-Stand-1/Doc-10_Pressure-red.pdf
-# for a discussion of different reduction formulae
-# formula used here is Formula 16 in the document which accounts for
-# gravity variations due to latitude and lower temperatures
-def computeQFF(pressure, temperature, elevation, latitude):
-    if pressure == None or temperature == None or elevation == None or latitude == None:
-        return None
-
-    T = 1
-    if temperature < -7:
-        T = 0.5 * temperature + 275
-    elif temperature >= -7 and temperature < 2:
-        T = 0.535 * temperature + 275.6
-    elif temperature >= 2:
-        T = 1.07 * temperature + 274.5
-
-    return round(pressure * math.exp(float(elevation) * 0.034163 * (1 - 0.0026373 * math.cos(2 * float(latitude))) / T), 2)
-
-def relHumidity(temp, dewPointTemp):
-    # approximation based on Magnus formula
-    # from http://www.wetterochs.de/wetter/feuchte.html
-    if temp >= 0:
-        a = 7.5
-        b = 237.3
-    else:
-        a = 7.6
-        b = 240.7
-
-    return math.pow(10, 2 + (a * dewPointTemp / (b + dewPointTemp)) - (a * temp / (b + temp)))
-
-def verbosePrint(output):
-    if args and args.verbose:
-        print(output)
-
-if __name__ == "__main__":
-    main()
