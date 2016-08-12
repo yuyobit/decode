@@ -4,7 +4,7 @@ from lib import relHumidity
 from lib import verbosePrint
 import settings
 
-def processStation(stationId, timestamp, windIndicator, bulletinId, bulletinIssuer, modifierType, modifierSequence, synop):
+def processSynop(stationId, timestamp, windIndicator, bulletinId, bulletinIssuer, modifierType, modifierSequence, synop):
     # skip station if duplicate
     duplicates = filter(lambda data: data['station_id'] == stationId and data['timestamp'] == timestamp, settings.decodedData)
     for duplicate in duplicates:
