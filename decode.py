@@ -30,6 +30,9 @@ def main():
     parser.add_argument('-v', '--verbose', dest='verbose',
                         help='print verbose output of filtering etc.',
                         action='store_true')
+    parser.add_argument('-l', '--list', dest='filelist',
+                        help='Specify that the input file contains a list with files to decode',
+                        action='store_true')
     parser.add_argument('-f', '--filter', dest='filterfile',
                         metavar='filter-file',
                         help='YAML file specifying country and station filters',
@@ -55,7 +58,17 @@ def main():
     setupFilter()
     setupStationInventory()
 
-    inputFiles = glob.glob(settings.input)
+    if args.filelist:
+        try:
+            inputFile = open(settings.input, 'r')
+            inputFiles = inputFile.readlines()
+            inputFile.close()
+            inputFiles = [x.strip('\n') for x in inputFiles]
+        except IOError:
+            sys.exit('Could not read input file list ' + settings.input + ', please check if it exists. Exiting.')
+    else:
+        inputFiles = glob.glob(settings.input)
+
     for inputFileName in inputFiles:
         print()
         print('Processing input file ' + inputFileName + '.')
