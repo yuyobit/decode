@@ -124,14 +124,14 @@ def processSynop(stationId, timestamp, windIndicator, bulletinId, bulletinIssuer
             data['station_pressure'] = None
 
         if stationId in settings.stationInventory:
-            data['reduced_pressure'] = computeQFF(data['station_pressure'], data['temperature'],
+            data['pressure'] = computeQFF(data['station_pressure'], data['temperature'],
                 settings.stationInventory[stationId]['ele'], settings.stationInventory[stationId]['lat'])
         else:
-            data['reduced_pressure'] = None
+            data['pressure'] = None
         land = land[6:]
     else:
         data['station_pressure'] = None
-        data['reduced_pressure'] = None
+        data['pressure'] = None
 
     # 4PPPP group omitted because reduced pressure (QFF) is computed
     # why? different reduction methods are in use, but consistency is important
