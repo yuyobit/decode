@@ -190,7 +190,19 @@ def processSynop(stationId, timestamp, windIndicator, bulletinId, bulletinIssuer
         else:
             data['snow_depth'] = None
 
-        # 55SSS - daily hours of sunshine (of the previous day) in 10ths of hours - omitted
+        # 55SSS - daily hours of sunshine (of the previous day) in 10ths of hours
+        while len(clim) > 0 and int(clim[0:1]) < 6 and clim[0:2] != '55':
+            clim = clim[6:]
+
+        if clim[0:2] == '55' and clim[0:3] != '553':
+            try:
+                data['daily_sun_duration'] = float(clim[2:5]) / 10
+            except ValueError:
+                data['daily_sun_duration'] = None
+            clim = clim[6:]
+        else:
+            data['daily_sun_duration'] = None
+
         # 553SS - duration of sunshine in the last hour in 10ths of hours
         while len(clim) > 0 and int(clim[0:1]) < 6 and clim[0:3] != '553':
             clim = clim[6:]
@@ -213,9 +225,22 @@ def processSynop(stationId, timestamp, windIndicator, bulletinId, bulletinIssuer
                 data['precipitation'] = [precipitation]
             elif precipitation != None:
                 data['precipitation'].append(precipitation)
+            clim = clim[6:]
         elif 'precipitation' not in data.keys():
             data['precipitation'] = None
-        # 7RRRR - total amount of precipitation in the last 24 hours - omitted
+
+        # 7RRRR - total amount of precipitation in the last 24 hours
+        if clim[0:1] == '7':
+            try:
+                data['daily_precipitation'] = float(clim[1:5]) / 10
+                if data['daily_precipitation'] == 999.9:
+                    data['daily_precipitation'] = 0.05
+            except ValueError:
+                data['daily_precipitation'] = None
+            clim = clim[6:]
+        else:
+            data['daily_precipitation'] = None
+
         while len(clim) > 0 and int(clim[0:1]) < 9:
             clim = clim[6:]
 
@@ -246,6 +271,8 @@ def processSynop(stationId, timestamp, windIndicator, bulletinId, bulletinIssuer
         data['snow_depth'] = None
         data['sun_duration'] = None
         data['gust_speed'] = None
+        data['daily_precipitation'] = None
+        data['daily_sun_duration'] = None
 
     settings.decodedData.append(data)
 

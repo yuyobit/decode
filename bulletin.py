@@ -36,7 +36,7 @@ def processBulletin(bulletin, count, basedate):
         bulletinId = bulletinHead.group(1)
         bulletinType = bulletinHead.group(2)
         bulletinIssuer = bulletinHead.group(4)
-        print('bulletin ' + str(count) + ', country: ' + bulletinHead.group(3) + ', issuer: ' + bulletinIssuer)
+        print('bulletin ' + bulletinId + ' (no ' + str(count) + '), country: ' + bulletinHead.group(3) + ', issuer: ' + bulletinIssuer)
         # consume first part of bulletin incl. CCCC and YYGGgg
         bulletin = bulletin[19:]
         # consume optional BBB modifier
@@ -72,7 +72,7 @@ def synopBulletin(bulletin, basedate, bulletinId, bulletinIssuer, modifierType, 
 
         year = basedate.year
         month = basedate.month
-        if day > basedate.day:
+        if int(day) > int(basedate.day):
             month -= 1
         timestamp = datetime.datetime(year, month, int(day), int(hour))
         print('timestamp: ' + str(timestamp))

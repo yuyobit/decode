@@ -213,6 +213,18 @@ def writeSqliteOutput():
             int_name TEXT)
     ''')
     cursor.execute('''
+        CREATE TABLE IF NOT EXISTS synop_daily (
+            wmo INTEGER,
+            date TEXT,
+            min_temperature REAL,
+            max_temperature REAL,
+            precipitation REAL,
+            sun_duration REAL,
+            correction_sequence TEXT,
+            amendment_sequence TEXT,
+            PRIMARY KEY(wmo, date))
+    ''')
+    cursor.execute('''
         CREATE TABLE IF NOT EXISTS synop (
             wmo INTEGER,
             timestamp TEXT,
@@ -254,6 +266,33 @@ def writeSqliteOutput():
                 dataRow['cloud_cover'], dataRow['sun_duration'], dataRow['current_weather'], dataRow['snow_depth'],
                 '', ''))
 
+            if dataRow['daily_precipitation'] != None:
+                if dataRow['timestamp'].hour >= 0 and dataRow['timestamp'].hour < 12:
+                    date = dataRow['timestamp'] - datetime.timedelta(days=1)
+                else:
+                    date = dataRow['timestamp']
+                station = dataRow['station_id']
+                cursor.execute('SELECT * FROM synop_daily WHERE wmo = ? AND date = ?', (station, date.strftime("%Y-%m-%d")))
+                if cursor.fetchone() != None:
+                    cursor.execute('UPDATE synop_daily SET precipitation = ? WHERE wmo = ? AND date = ?',
+                        (dataRow['daily_precipitation'], station, date.strftime("%Y-%m-%d")))
+                else:
+                    cursor.execute('INSERT INTO synop_daily VALUES (?, ?, ?, ?, ?, ?, ?, ?)',
+                        (station, date.strftime("%Y-%m-%d"), None, None, dataRow['daily_precipitation'], None, '', ''))
+                connection.commit()
+
+            if dataRow['daily_sun_duration'] != None:
+                date = dataRow['timestamp'] - datetime.timedelta(days=1)
+                station = dataRow['station_id']
+                cursor.execute('SELECT * FROM synop_daily WHERE wmo = ? AND date = ?', (station, date.strftime("%Y-%m-%d")))
+                if cursor.fetchone() != None:
+                    cursor.execute('UPDATE synop_daily SET sun_duration = ? WHERE wmo = ? AND date = ?',
+                        (dataRow['daily_sun_duration'], station, date.strftime("%Y-%m-%d")))
+                else:
+                    cursor.execute('INSERT INTO synop_daily VALUES (?, ?, ?, ?, ?, ?, ?, ?)',
+                        (station, date.strftime("%Y-%m-%d"), None, None, None, dataRow['daily_sun_duration'], '', ''))
+                connection.commit()
+
     # IGNORE means that it does not fail if the key already exists
     cursor.executemany('INSERT OR IGNORE INTO station VALUES (?, ?, ?, ?, ?, ?, ?)', stations)
     cursor.executemany('INSERT OR IGNORE INTO synop VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)', synop)
@@ -269,7 +308,10 @@ def writeSqliteOutput():
         # or the amendment sequence is not present (i.e. has not been amended so far)
         # or the amendment sequence is lower (i.e. our amendment is newer)
         if result == None or result[15] == None or result[15] < correction['modifier']['sequence']:
-            correctionSeq = result[14]
+            if result != None:
+                correctionSeq = result[14]
+            else:
+                correctionSeq = ''
             cursor.execute('DELETE FROM synop WHERE wmo = ? AND timestamp = ?', idTuple)
             cursor.execute('INSERT INTO synop VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)',
                 (amendment['station_id'], amendment['timestamp'], amendment['temperature'], amendment['dew_point_temperature'],
@@ -289,7 +331,10 @@ def writeSqliteOutput():
         # or the correction sequence is not present (i.e. has not been corrected so far)
         # or the correction sequence is lower (i.e. our correction is newer)
         if result == None or result[14] == None or result[14] < correction['modifier']['sequence']:
-            amendmentSeq = result[15]
+            if result != None:
+                amendmentSeq = result[15]
+            else:
+                amendmentSeq = ''
             cursor.execute('DELETE FROM synop WHERE wmo = ? AND timestamp = ?', idTuple)
             cursor.execute('INSERT INTO synop VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)',
                 (correction['station_id'], correction['timestamp'], correction['temperature'], correction['dew_point_temperature'],
